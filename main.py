@@ -6,6 +6,9 @@ import logging
 import time
 import json
 import os
+import tkinter as tk
+from tkinter import ttk, messagebox
+from tkcalendar import DateEntry
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -49,6 +52,8 @@ def get_exchange_rate(api_key, from_currency, date=None, retries=5, delay=10):
             return rates
         except requests.exceptions.RequestException as e:
             logging.error(f"Error fetching exchange rates: {e}")
+            if response.status_code == 429:
+                delay = min(delay * 2, 60)  # Exponential backoff with a max delay of 60 seconds
             if attempt < retries - 1:
                 time.sleep(delay)  # Wait before retrying
             else:
@@ -83,75 +88,130 @@ def plot_exchange_rate(api_key, from_currency, to_currency, start_date, end_date
     plt.grid(True)
     plt.show()
 
+# List of valid ISO 4217 currency codes
+valid_codes = ["USD", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "CNY", "SEK", "NZD"]
+
 def validate_currency_code(code):
-    # List of valid ISO 4217 currency codes
-    valid_codes = ["USD", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "CNY", "SEK", "NZD"]
     return code in valid_codes
 
-def main():
-    print("Welcome to the Currency Converter!")
-    
-    # Load configuration
-    config = configparser.ConfigParser()
-    config.read('config.ini')
-    api_key = config['DEFAULT']['API_KEY']
-    
+def create_currency_dropdown(parent, row, label_text):
+    ttk.Label(parent, text=label_text).grid(column=0, row=row, padx=10, pady=5)
+    currency_var = tk.StringVar()
+    currency_dropdown = ttk.Combobox(parent, textvariable=currency_var, values=valid_codes, state="readonly")
+    currency_dropdown.grid(column=1, row=row, padx=10, pady=5)
+    return currency_var
+
+def create_date_picker(parent, row, label_text):
+    ttk.Label(parent, text=label_text).grid(column=0, row=row, padx=10, pady=5)
+    date_var = tk.StringVar()
+    date_entry = DateEntry(parent, textvariable=date_var, date_pattern='dd-MM-yyyy')
+    date_entry.grid(column=1, row=row, padx=10, pady=5)
+    return date_var
+
+def on_convert():
     try:
-        amount = float(input("Enter the amount: "))
+        amount = float(amount_entry.get())
     except ValueError:
-        print("Invalid amount. Please enter a numeric value.")
+        messagebox.showerror("Invalid Input", "Please enter a numeric value for the amount.")
         return
 
-    from_currency = input("Enter the from currency (e.g., USD): ").upper()
+    from_currency = from_currency_var.get()
     if not validate_currency_code(from_currency):
-        print("Invalid currency code. Please enter a valid ISO 4217 currency code.")
+        messagebox.showerror("Invalid Input", "Please select a valid ISO 4217 currency code for the from currency.")
         return
 
-    to_currency = input("Enter the to currency (e.g., EUR): ").upper()
+    to_currency = to_currency_var.get()
     if not validate_currency_code(to_currency):
-        print("Invalid currency code. Please enter a valid ISO 4217 currency code.")
+        messagebox.showerror("Invalid Input", "Please select a valid ISO 4217 currency code for the to currency.")
         return
-    
-    # Prompt for date in UK format
-    date_input = input("Enter the date for historical exchange rates (DD-MM-YYYY) to see past values, or press Enter for today's date: ")
+
+    date_input = date_var.get()
     if date_input:
         try:
             date = datetime.strptime(date_input, "%d-%m-%Y").date()
         except ValueError:
-            print("Invalid date format. Please enter the date in DD-MM-YYYY format.")
+            messagebox.showerror("Invalid Input", "Please enter the date in DD-MM-YYYY format.")
             return
     else:
         date = datetime.today().date()
-    
-    # Check if the date is within the supported range
+
     if date < datetime(1999, 1, 1).date():
-        print("Error: Historical data is only available from 1999 onwards.")
+        messagebox.showerror("Invalid Input", "Historical data is only available from 1999 onwards.")
         return
-    
-    # Calculate the value on the given date
+
+    progress_bar.start()
+    root.after(100, lambda: fetch_conversion(api_key, amount, from_currency, to_currency, date))
+
+def fetch_conversion(api_key, amount, from_currency, to_currency, date):
     amount_on_date = convert_currency(api_key, amount, from_currency, to_currency, date)
-    
-    # Calculate the value today
     amount_today = convert_currency(api_key, amount, from_currency, to_currency)
-    
+    progress_bar.stop()
+
     if amount_on_date is not None and amount_today is not None:
-        print(f"On {date}, {amount} {from_currency} was equal to {amount_on_date:.2f} {to_currency}")
-        print(f"Today, {amount} {from_currency} is equal to {amount_today:.2f} {to_currency}")
-        change = amount_today - amount_on_date
-        print(f"The change in value from {date} to today is {change:.2f} {to_currency}")
-    
-    # Prompt for date range for graphical output
-    start_date_input = input("Enter the start date for the graph (DD-MM-YYYY): ")
-    end_date_input = input("Enter the end date for the graph (DD-MM-YYYY): ")
-    
+        result_label.config(text=f"On {date}, {amount} {from_currency} was equal to {amount_on_date:.2f} {to_currency}\n"
+                                 f"Today, {amount} {from_currency} is equal to {amount_today:.2f} {to_currency}\n"
+                                 f"The change in value from {date} to today is {amount_today - amount_on_date:.2f} {to_currency}")
+    else:
+        result_label.config(text="Error: Unable to convert currencies.")
+
+def on_plot():
+    start_date_input = start_date_var.get()
+    end_date_input = end_date_var.get()
+
     try:
         start_date = datetime.strptime(start_date_input, "%d-%m-%Y").date()
         end_date = datetime.strptime(end_date_input, "%d-%m-%Y").date()
     except ValueError:
-        print("Invalid date format. Please enter the dates in DD-MM-YYYY format.")
+        messagebox.showerror("Invalid Input", "Please enter the dates in DD-MM-YYYY format.")
         return
-    
+
+    if start_date > end_date:
+        messagebox.showerror("Invalid Input", "Start date must be before end date.")
+        return
+
+    progress_bar.start()
+    root.after(100, lambda: fetch_plot(api_key, from_currency_var.get(), to_currency_var.get(), start_date, end_date))
+
+def fetch_plot(api_key, from_currency, to_currency, start_date, end_date):
     plot_exchange_rate(api_key, from_currency, to_currency, start_date, end_date)
+    progress_bar.stop()
+
+def main():
+    global api_key, amount_entry, from_currency_var, to_currency_var, date_var, result_label, start_date_var, end_date_var, progress_bar, root
+
+    # Load configuration
+    config = configparser.ConfigParser()
+    config.read('config.ini')
+    api_key = config['DEFAULT']['API_KEY']
+
+    root = tk.Tk()
+    root.title("Currency Converter")
+
+    ttk.Label(root, text="Amount:").grid(column=0, row=0, padx=10, pady=5)
+    amount_entry = ttk.Entry(root)
+    amount_entry.grid(column=1, row=0, padx=10, pady=5)
+
+    from_currency_var = create_currency_dropdown(root, 1, "From Currency:")
+    to_currency_var = create_currency_dropdown(root, 2, "To Currency:")
+
+    date_var = create_date_picker(root, 3, "Date (DD-MM-YYYY):")
+
+    convert_button = ttk.Button(root, text="Convert", command=on_convert)
+    convert_button.grid(column=0, row=4, columnspan=2, padx=10, pady=10)
+
+    result_label = ttk.Label(root, text="")
+    result_label.grid(column=0, row=5, columnspan=2, padx=10, pady=10)
+
+    start_date_var = create_date_picker(root, 6, "Start Date for Graph (DD-MM-YYYY):")
+    end_date_var = create_date_picker(root, 7, "End Date for Graph (DD-MM-YYYY):")
+
+    plot_button = ttk.Button(root, text="Plot Exchange Rate", command=on_plot)
+    plot_button.grid(column=0, row=8, columnspan=2, padx=10, pady=10)
+
+    progress_bar = ttk.Progressbar(root, mode='indeterminate')
+    progress_bar.grid(column=0, row=9, columnspan=2, padx=10, pady=10)
+
+    root.mainloop()
 
 if __name__ == "__main__":
     try:
